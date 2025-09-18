@@ -24,8 +24,8 @@
 #ifdef FMM_MEASURE_TIMING
 #include "timer.hpp"
 #else
-#define tic (void*)
-#define toc (void*)
+#define tic(x) ((void)0)
+#define toc(x) ((void)0)
 #endif
 
 
