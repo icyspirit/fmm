@@ -5,6 +5,7 @@
 
 #include "mpi_util.hpp"
 #include <mpi.h>
+#include <algorithm>
 #include <cstddef>
 #include <cstring>
 
@@ -131,7 +132,7 @@ public:
     {
         reserve(size);
         if (_root && _data) {
-            std::memset(_data, 0, sizeof(T)*size);
+            std::fill_n(_data, size, T{});
         }
         sync();
 

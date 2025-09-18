@@ -6,6 +6,7 @@
 #include "aligned.hpp"
 #include "distributed.hpp"
 #include "zorder.hpp"
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -188,7 +189,7 @@ public:
     inline void initialize() noexcept
     {
         if (_data.root() && _data.data()) {
-            std::memset(_data.data(), 0, sizeof(T)*_data.size());
+            std::fill_n(_data.data(), _data.size(), T{});
         }
     }
 
