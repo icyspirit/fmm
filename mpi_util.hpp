@@ -6,6 +6,7 @@
 #include <mpi.h>
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <limits.h>
 #include <stdexcept>
 
@@ -39,8 +40,8 @@ inline int get_rank()
 
 inline MPI_Comm get_shm_comm()
 {
-    static MPI_Comm shm_comm = MPI_UNDEFINED;
-    if (shm_comm == MPI_UNDEFINED) {
+    static MPI_Comm shm_comm = MPI_COMM_NULL;
+    if (shm_comm == MPI_COMM_NULL) {
         MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &shm_comm);
     }
     return shm_comm;
