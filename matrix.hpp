@@ -138,14 +138,12 @@ struct VectorBase<Element_t, std::index_sequence<I...>, Derived_t>: Contiguous_t
     }
 
     template<size_t M=sizeof...(I)>
-    constexpr auto cross(const Derived_t&) const
+    constexpr auto cross(const Derived_t& other) const
     {
-        throw std::runtime_error("Not implemented");
-    }
+        if constexpr (M != 3) {
+            throw std::runtime_error("Not implemented");
+        }
 
-    template<>
-    constexpr auto cross<3>(const Derived_t& __restrict other) const
-    {
         return Derived_t{{at(1)*other.at(2) - at(2)*other.at(1),
                           at(2)*other.at(0) - at(0)*other.at(2),
                           at(0)*other.at(1) - at(1)*other.at(0)}};
@@ -188,24 +186,20 @@ struct MatrixBase<Vector_t, std::index_sequence<J...>, Derived_t>: Contiguous_t<
     template<size_t N=sizeof...(J)>
     constexpr auto determinant() const
     {
-        throw std::runtime_error("Not implemented");
-    }
+        if constexpr (N != 3) {
+            throw std::runtime_error("Not implemented");
+        }
 
-    template<>
-    constexpr auto determinant<3>() const
-    {
         return at(0).cross(at(1)).dot(at(2));
     }
 
     template<size_t N=sizeof...(J)>
     constexpr auto inversed() const
     {
-        throw std::runtime_error("Not implemented");
-    }
+        if constexpr (N != 3) {
+            throw std::runtime_error("Not implemented");
+        }
 
-    template<>
-    constexpr auto inversed<3>() const
-    {
         return Derived_t{{at(1).at(1)*at(2).at(2) - at(1).at(2)*at(2).at(1),
                           at(2).at(1)*at(0).at(2) - at(2).at(2)*at(0).at(1),
                           at(0).at(1)*at(1).at(2) - at(0).at(2)*at(1).at(1),
