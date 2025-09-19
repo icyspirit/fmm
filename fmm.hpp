@@ -118,7 +118,7 @@ inline int fkm(int k, int m) noexcept
 }
 
 
-template<typename T, size_t N, int p, template<typename, size_t> typename Container>
+template<typename T, size_t N, int p, template<typename, size_t> typename Container, bool support_gradient=false>
 class FMM3D {
     using index_t = default_index_t;
     using zindex_t = default_zindex_t;
@@ -137,6 +137,7 @@ private:
     int _shm_size, _shm_rank;
     svector<T> _phi;
     svector<std::array<T, nm2i(p, p) + 1>> _Zrho;
+    svector<std::array<Vector<std::complex<T>, dim>, nm2i(p, p) + 1>> _Zgrho;
 
     std::array<T, nposm2i(p, p) + 1> _Z_near_positive;
     std::array<std::array<T, nposm2i(2*p, 2*p) + 1>, 64> _Z_ilist_positive;
@@ -179,7 +180,8 @@ public:
         _n_particle{static_cast<int>(_positions.size())},
         _width{partitioner.box().width()},
         _phi(_shm_comm, _n_particle),
-        _Zrho(_shm_comm, _n_particle)
+        _Zrho(_shm_comm, _n_particle),
+        _Zgrho(_shm_comm, _n_particle*support_gradient)
     {
         MPI_Comm_size(_shm_comm, &_shm_size);
         MPI_Comm_rank(_shm_comm, &_shm_rank);
@@ -200,12 +202,36 @@ public:
                             }
                             rhon *= rho;
                         }
+
+                        if constexpr (support_gradient) {
+                            const Matrix<std::complex<T>, dim, dim> rot{
+                                std::sin(theta)*std::cos(_phi[i]), std::sin(theta)*std::sin(_phi[i]), std::cos(theta),
+                                std::cos(theta)*std::cos(_phi[i]), std::cos(theta)*std::sin(_phi[i]), -std::sin(theta),
+                                -std::sin(_phi[i]), std::cos(_phi[i]), 0
+                            };
+
+                            T rhonm1 = 1;
+                            for (int n=1; n<=p; ++n) {
+                                for (int m=-n; m<=n; ++m) {
+                                    const Vector<std::complex<T>, dim> vec{
+                                        std::polar(n*rhonm1*Z(n, m, theta), -m*_phi[i]),
+                                        std::polar(rhonm1/std::sin(theta)*(std::sqrt(static_cast<T>((n + 1)*(n + 1) - m*m))*Z(n + 1, m, theta) - (n + 1)*std::cos(theta)*Z(n, m, theta)), -m*_phi[i]),
+                                        std::polar(m*rhonm1/std::sin(theta)*Z(n, m, theta), -(m*_phi[i] + M_PI/2))
+                                    };
+                                    _Zgrho[i][nm2i(n, m)] = rot.dot(vec);
+                                }
+                                rhonm1 *= rho;
+                            }
+                        }
                     }
                 }
             }
         );
         _phi.sync();
         _Zrho.sync();
+        if constexpr (support_gradient) {
+            _Zgrho.sync();
+        }
 
         for (int n=0; n<=p; ++n) {
             for (int m=0; m<=n; ++m) {
@@ -337,9 +363,11 @@ public:
         return _A[nposm2i(n, m)];
     }
 
-    template<typename LevelData_t>
+    template<bool gradient=false, typename LevelData_t>
     void N2M(int l, const Vector<T, N>* Q, LevelData_t& M) const noexcept
     {
+        static_assert(support_gradient || !gradient);
+
         const auto& olevel = _partitioner.octreeLevel(l);
         const auto& indices = olevel.indices();
 
@@ -350,7 +378,12 @@ public:
                 const int i = std::get<0>(indices.value(i_leaf, inz));
                 #pragma omp simd
                 for (int nm=0; nm<=nm2i(p, p); ++nm) {
-                    M[i_node][nm] += r2c(Q[i]*_Zrho[i][nm], -_i2m[nm]*_phi[i]);
+                    if constexpr (!gradient) {
+                        M[i_node][nm] += r2c(Q[i]*_Zrho[i][nm], -_i2m[nm]*_phi[i]);
+                    } else {
+                        static_assert(N == 3);
+                        M[i_node][nm] += Vector<std::complex<T>, N>{Q[i][0], Q[i][1], Q[i][2]}.cross(_Zgrho[i][nm]);
+                    }
                 }
             }
         }
@@ -523,8 +556,11 @@ public:
         }
     }
 
+    template<bool gradient=false>
     void N2N(const Vector<T, N>* Q, Vector<T, N>* U, const std::function<bool(int, int)>& is_self) const noexcept
     {
+        static_assert(support_gradient || !gradient);
+
         for (int i=begin(_n_particle, _shm_size, _shm_rank); i<end(_n_particle, _shm_size, _shm_rank); ++i) {
             const auto& [li, i_leaf] = _partitioner.get_partition(i);
             const auto& nlist = _partitioner.octreeLevel(li).nlist();
@@ -534,20 +570,35 @@ public:
                 for (int jnz=0; jnz<indices.nnz(j_leaf); ++jnz) {
                     const int j = std::get<0>(indices.value(j_leaf, jnz));
                     if (!is_self(i, j)) {
-                        U[i] += Q[j]/(_positions[i] - _positions[j]).norm();
+                        if constexpr (!gradient) {
+                            U[i] += Q[j]/(_positions[i] - _positions[j]).norm();
+                        } else {
+                            static_assert(N == 3);
+                            const auto R = _positions[i] - _positions[j];
+                            U[i] += Q[j].cross(R)/std::pow(R.norm(), static_cast<T>(3));
+                        }
                     }
                 }
             }
 
             for (int inz=0; inz<_slist.nnz(i); ++inz) {
                 const int j = std::get<0>(_slist.value(i, inz));
-                U[i] -= Q[j]/(_positions[i] - _positions[j]).norm();
+                if constexpr (!gradient) {
+                    U[i] -= Q[j]/(_positions[i] - _positions[j]).norm();
+                } else {
+                    static_assert(N == 3);
+                    const auto R = _positions[i] - _positions[j];
+                    U[i] += Q[j].cross(R)/std::pow(R.norm(), static_cast<T>(3));
+                }
             }
         }
     }
 
+    template<bool gradient=false>
     void rinv_nonear(const Vector<T, N>* Q, Vector<T, N>* U) const noexcept
     {
+        static_assert(support_gradient || !gradient);
+
         const int level = _partitioner.level();
 
         for (auto& M: _M) {
@@ -558,10 +609,10 @@ public:
         }
 
         tic("N2M2M");
-        N2M(level, Q, _M[level]);
+        N2M<gradient>(level, Q, _M[level]);
         for (int l=level - 1; l>=minimum_level; --l) {
             M2M(l, _M[l + 1], _M[l]);
-            N2M(l, Q, _M[l]);
+            N2M<gradient>(l, Q, _M[l]);
         }
         toc("N2M2M");
 
@@ -580,17 +631,23 @@ public:
         toc("L2L2N");
     }
 
+    template<bool gradient=false>
     void rinv(const Vector<T, N>* Q, Vector<T, N>* U, const std::function<bool(int, int)>& is_self) const noexcept
     {
-        rinv_nonear(Q, U);
+        static_assert(support_gradient || !gradient);
+
+        rinv_nonear<gradient>(Q, U);
         tic("N2N");
-        N2N(Q, U, is_self);
+        N2N<gradient>(Q, U, is_self);
         toc("N2N");
     }
 
+    template<bool gradient=false>
     void rinv(const Vector<T, N>* Q, Vector<T, N>* U) const noexcept
     {
-        rinv(Q, U, [](int i, int j) { return i == j; });
+        static_assert(support_gradient || !gradient);
+
+        rinv<gradient>(Q, U, [](int i, int j) { return i == j; });
     }
 };
 
